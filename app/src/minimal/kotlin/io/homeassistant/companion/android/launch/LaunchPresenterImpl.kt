@@ -1,29 +1,30 @@
 package io.homeassistant.companion.android.launch
 
-import android.content.Context
 import io.homeassistant.companion.android.BuildConfig
 import io.homeassistant.companion.android.common.data.integration.DeviceRegistration
 import io.homeassistant.companion.android.common.data.servers.ServerManager
-import io.homeassistant.companion.android.util.tryRegisterCurrentDistributor
+import io.homeassistant.companion.android.common.push.PushProviderManager
 import javax.inject.Inject
 import kotlinx.coroutines.launch
-import org.unifiedpush.android.connector.UnifiedPush
 import timber.log.Timber
 
 class LaunchPresenterImpl @Inject constructor(
     view: LaunchView,
-    serverManager: ServerManager
-) : LaunchPresenterBase(view, serverManager) {
+    serverManager: ServerManager,
+    pushProviderManager: PushProviderManager
+) : LaunchPresenterBase(view, serverManager, pushProviderManager) {
     override fun resyncRegistration() {
         if (!serverManager.isRegistered()) return
-        val hasDistributor = UnifiedPush.tryRegisterCurrentDistributor(view as Context)
         serverManager.defaultServers.forEach {
             ioScope.launch {
                 try {
+                    val result = pushProviderManager.selectAndRegister()
                     serverManager.integrationRepository(it.id).updateRegistration(
                         DeviceRegistration(
                             appVersion = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-                            pushEncrypt = hasDistributor
+                            pushToken = result?.pushToken,
+                            pushUrl = result?.pushUrl ?: result?.pushToken?.let { "" },
+                            pushEncrypt = result?.encrypt ?: false
                         )
                     )
                     serverManager.integrationRepository(it.id).getConfig() // Update cached data
