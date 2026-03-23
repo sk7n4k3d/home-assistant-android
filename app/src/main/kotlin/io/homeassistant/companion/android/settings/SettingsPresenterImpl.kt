@@ -13,11 +13,13 @@ import io.homeassistant.companion.android.common.data.integration.impl.entities.
 import io.homeassistant.companion.android.common.data.prefs.NightModeTheme
 import io.homeassistant.companion.android.common.data.prefs.PrefsRepository
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.push.PushProviderManager
 import io.homeassistant.companion.android.database.server.Server
 import io.homeassistant.companion.android.database.settings.SettingsDao
 import io.homeassistant.companion.android.settings.assist.DefaultAssistantManager
 import io.homeassistant.companion.android.settings.language.LanguagesManager
 import io.homeassistant.companion.android.themes.NightModeManager
+import io.homeassistant.companion.android.unifiedpush.UnifiedPushManager
 import io.homeassistant.companion.android.util.ChangeLog
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -37,6 +39,8 @@ class SettingsPresenterImpl @Inject constructor(
     private val prefsRepository: PrefsRepository,
     private val nightModeManager: NightModeManager,
     private val langsManager: LanguagesManager,
+    private val unifiedPushManager: UnifiedPushManager,
+    private val pushProviderManager: PushProviderManager,
     private val changeLog: ChangeLog,
     private val settingsDao: SettingsDao,
     private val defaultAssistantManager: DefaultAssistantManager,
@@ -113,6 +117,7 @@ class SettingsPresenterImpl @Inject constructor(
             "languages" -> langsManager.getCurrentLang()
             "page_zoom" -> prefsRepository.getPageZoomLevel().toString()
             "screen_orientation" -> prefsRepository.getScreenOrientation()
+            "notification_push_provider" -> selectedPushProvider
             else -> throw IllegalArgumentException("No string found by this key: $key")
         }
     }
@@ -124,6 +129,7 @@ class SettingsPresenterImpl @Inject constructor(
                 "languages" -> langsManager.saveLang(value)
                 "page_zoom" -> prefsRepository.setPageZoomLevel(value?.toIntOrNull())
                 "screen_orientation" -> prefsRepository.saveScreenOrientation(value)
+                "notification_push_provider" -> handlePushProviderChange(value)
                 else -> throw IllegalArgumentException("No string found by this key: $key")
             }
         }
@@ -155,6 +161,48 @@ class SettingsPresenterImpl @Inject constructor(
         } catch (e: Exception) {
             Timber.d(e, "Unable to get rate limits")
             return@withContext null
+        }
+    }
+
+    override fun getUnifiedPushDistributors(): List<String> = unifiedPushManager.getDistributors()
+
+    override fun getAvailablePushProviders(): List<Pair<String, String>> {
+        val result = mutableListOf<Pair<String, String>>()
+        for (provider in pushProviderManager.getAllProviders()) {
+            val label = when (provider.name) {
+                "FCM" -> "Firebase Cloud Messaging"
+                "WebSocket" -> "WebSocket"
+                "UnifiedPush" -> "UnifiedPush"
+                else -> provider.name
+            }
+            result.add(provider.name to label)
+        }
+        return result
+    }
+
+    private var selectedPushProvider: String? = null
+
+    override fun getActivePushProviderValue(): String {
+        selectedPushProvider?.let { return it }
+        val distributor = unifiedPushManager.getDistributor()
+        val value = if (distributor != null && distributor != UnifiedPushManager.DISTRIBUTOR_DISABLED) {
+            "${SettingsPresenter.PUSH_PROVIDER_UP_PREFIX}$distributor"
+        } else {
+            "WebSocket"
+        }
+        selectedPushProvider = value
+        return value
+    }
+
+    override fun handlePushProviderChange(value: String?) {
+        if (value == null) return
+        selectedPushProvider = value
+        if (value.startsWith(SettingsPresenter.PUSH_PROVIDER_UP_PREFIX)) {
+            val distributor = value.removePrefix(SettingsPresenter.PUSH_PROVIDER_UP_PREFIX)
+            unifiedPushManager.saveDistributor(distributor)
+        } else {
+            // Switching away from UnifiedPush — clear endpoint and re-register with server
+            unifiedPushManager.saveDistributor(null)
         }
     }
 

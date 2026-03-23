@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
+import io.homeassistant.companion.android.websocket.WebsocketManager
 import android.provider.Settings
 import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
@@ -59,6 +61,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -250,6 +253,7 @@ class SettingsFragment(
         }
 
         updateNotificationChannelPrefs()
+        updatePushProviderPrefs()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             findPreference<Preference>("notification_permission")?.let {
@@ -540,6 +544,63 @@ class SettingsFragment(
                 uiManager?.currentModeType != Configuration.UI_MODE_TYPE_TELEVISION
         }
     }
+
+    private fun updatePushProviderPrefs() {
+        findPreference<ListPreference>("notification_push_provider")?.let { pref ->
+            pref.preferenceDataStore = null
+            pref.setOnPreferenceChangeListener { _, newValue ->
+                val value = newValue as? String
+                lifecycleScope.launch(Dispatchers.IO) {
+                    presenter.handlePushProviderChange(value)
+                }
+                if (value == "WebSocket") {
+                    Toast.makeText(requireContext(), commonR.string.push_provider_websocket_enabled, Toast.LENGTH_SHORT).show()
+                    lifecycleScope.launch {
+                        WebsocketManager.restart(requireContext())
+                    }
+                }
+                true
+            }
+
+            lifecycleScope.launch(Dispatchers.IO) {
+                val entries = mutableListOf<String>()
+                val values = mutableListOf<String>()
+                val pm = requireContext().packageManager
+
+                val providers = presenter.getAvailablePushProviders()
+                for (provider in providers) {
+                    if (provider.first == "UnifiedPush") {
+                        val distributors = presenter.getUnifiedPushDistributors()
+                        for (distributor in distributors) {
+                            val label = try {
+                                pm.getApplicationLabel(
+                                    pm.getApplicationInfo(distributor, PackageManager.GET_META_DATA),
+                                ).toString()
+                            } catch (_: PackageManager.NameNotFoundException) {
+                                distributor
+                            }
+                            entries.add("UnifiedPush ($label)")
+                            values.add("${SettingsPresenter.PUSH_PROVIDER_UP_PREFIX}$distributor")
+                        }
+                    } else {
+                        entries.add(provider.second)
+                        values.add(provider.first)
+                    }
+                }
+
+                val activeValue = presenter.getActivePushProviderValue()
+
+                withContext(Dispatchers.Main) {
+                    pref.entries = entries.toTypedArray()
+                    pref.entryValues = values.toTypedArray()
+                    if (pref.value == null || pref.value !in values) {
+                        pref.value = activeValue
+                    }
+                }
+            }
+        }
+    }
+
 
     private fun onServerLockResult(result: Int): Boolean {
         if (result == Authenticator.SUCCESS && serverAuth != null) {
